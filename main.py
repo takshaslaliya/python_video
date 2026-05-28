@@ -63,15 +63,65 @@ async def queue_worker():
             print(f"Worker queue loop error: {e}")
             await asyncio.sleep(1)
 
+async def cleanup_old_files():
+    """Background task that runs continuously, deleting files/folders older than 48 hours."""
+    import time
+    import shutil
+    print("Started file cleanup background task.")
+    while True:
+        try:
+            now = time.time()
+            cutoff = now - (48 * 3600)  # 48 hours ago
+            
+            # Clean renders
+            if RENDERS_DIR.exists():
+                for item in RENDERS_DIR.iterdir():
+                    if item.is_dir():
+                        if item.stat().st_mtime < cutoff:
+                            print(f"Cleaning up old render directory: {item.name}")
+                            shutil.rmtree(item, ignore_errors=True)
+                    elif item.is_file():
+                        if item.stat().st_mtime < cutoff:
+                            print(f"Cleaning up old render file: {item.name}")
+                            item.unlink(missing_ok=True)
+                            
+            # Clean uploads
+            if UPLOADS_DIR.exists():
+                for item in UPLOADS_DIR.iterdir():
+                    if item.name == "music":
+                        # Clean custom music files inside music directory
+                        for music_file in item.glob("*.mp3"):
+                            if music_file.stat().st_mtime < cutoff:
+                                print(f"Cleaning up old upload music: {music_file.name}")
+                                music_file.unlink(missing_ok=True)
+                        continue
+                        
+                    if item.is_dir():
+                        if item.stat().st_mtime < cutoff:
+                            print(f"Cleaning up old upload directory: {item.name}")
+                            shutil.rmtree(item, ignore_errors=True)
+                    elif item.is_file():
+                        if item.stat().st_mtime < cutoff:
+                            print(f"Cleaning up old upload file: {item.name}")
+                            item.unlink(missing_ok=True)
+                            
+        except Exception as e:
+            print(f"Error in cleanup_old_files task: {e}")
+            
+        # Run cleanup check every hour (3600 seconds)
+        await asyncio.sleep(3600)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: create and start worker task
+    # Startup: create and start worker and cleanup tasks
     worker_task = asyncio.create_task(queue_worker())
+    cleanup_task = asyncio.create_task(cleanup_old_files())
     yield
-    # Shutdown: cancel worker task
+    # Shutdown: cancel tasks
     worker_task.cancel()
+    cleanup_task.cancel()
     try:
-        await worker_task
+        await asyncio.gather(worker_task, cleanup_task, return_exceptions=True)
     except asyncio.CancelledError:
         pass
 
