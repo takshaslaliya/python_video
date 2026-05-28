@@ -326,6 +326,51 @@ class VideoGenerator:
             print(f"Error in download_stock_video: {e}")
             return False
 
+    def generate_ai_video_clip(self, prompt, filepath):
+        """Generates a video clip using the Bytez Text-to-Video API with fallback support."""
+        print(f"Generating AI video clip via Bytez for prompt: {prompt}")
+        try:
+            from bytez import Bytez
+            sdk = Bytez("a60b4df1afb2ad1715fdb9d8175544ef")
+            model = sdk.model("ali-vilab/text-to-video-ms-1.7b")
+            
+            result = model.run(prompt)
+            if result.error:
+                print(f"Bytez API Error: {result.error}")
+                return False
+                
+            output = result.output
+            if not output:
+                print("Bytez API returned empty output")
+                return False
+                
+            video_url = None
+            if isinstance(output, str):
+                video_url = output
+            elif isinstance(output, list) and len(output) > 0:
+                video_url = output[0]
+            elif isinstance(output, dict):
+                video_url = output.get("url") or output.get("output") or output.get("video")
+                
+            if not video_url:
+                print(f"Could not extract video URL from Bytez output: {output}")
+                return False
+                
+            print(f"Downloading generated video from Bytez URL: {video_url}")
+            import requests
+            r = requests.get(video_url, stream=True, timeout=60)
+            r.raise_for_status()
+            with open(filepath, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            
+            print(f"Successfully downloaded AI video clip to {filepath}")
+            return True
+            
+        except Exception as e:
+            print(f"Exception generating AI video clip via Bytez: {e}")
+            return False
+
     def generate_procedural_image(self, text, filepath, aspect_ratio="16:9"):
         """Generates a beautiful modern gradient background with scene text overlay as a bulletproof fallback."""
         width, height = (1280, 720) if aspect_ratio == "16:9" else (720, 1280) if aspect_ratio == "9:16" else (800, 800)
@@ -747,6 +792,11 @@ class VideoGenerator:
                 has_video = False
                 if visual_source == "video":
                     has_video = await asyncio.to_thread(self.download_stock_video, scene_text, video_path)
+                elif visual_source == "ai-video":
+                    has_video = await asyncio.to_thread(self.generate_ai_video_clip, scene_text, video_path)
+                    if not has_video:
+                        print("Bytez AI Video generation failed or returned error. Falling back to stock video...")
+                        has_video = await asyncio.to_thread(self.download_stock_video, scene_text, video_path)
                 
                 if not has_video:
                     # Generate a short visual prompt or use scene text directly
