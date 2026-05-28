@@ -1,0 +1,25 @@
+# Python caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Renders and Uploads fallback
+renders/
+uploads/
+temp_*/
+*.mp4
+*.mp3
+*.srt
+*.png
+
+# IDE configs
+.vscode/
+.idea/
