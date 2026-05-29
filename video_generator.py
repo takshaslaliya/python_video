@@ -914,6 +914,10 @@ class VideoGenerator:
                 
             self.update_progress(task_id, 100, "Generation complete!", video_url=f"/renders/{task_id}/final_output.mp4")
             
+        except asyncio.CancelledError:
+            print(f"Task {task_id} was cancelled or timed out (took > 4 minutes).")
+            self.update_progress(task_id, -1, "Error: Generation timed out (exceeded 4 minutes limit).")
+            raise
         except Exception as e:
             import traceback
             error_msg = f"Generation failed: {str(e)}\n{traceback.format_exc()}"

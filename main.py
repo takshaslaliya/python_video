@@ -32,22 +32,32 @@ async def queue_worker():
                 queued_task_ids.remove(task_id)
             
             try:
-                # Sequential execution of the async task
-                await generator.generate_video_task(
-                    task_id=task_id,
-                    script=task_args["script"],
-                    aspect_ratio=task_args["aspect_ratio"],
-                    voice=task_args["voice"],
-                    use_subtitles=task_args["use_subtitles"],
-                    use_music=task_args["use_music"],
-                    music_genre=task_args["music_genre"],
-                    visual_source=task_args["visual_source"],
-                    voice_speed=task_args["voice_speed"],
-                    resolution=task_args["resolution"],
-                    fps=task_args["fps"],
-                    use_narration=task_args["use_narration"]
-                )
-                print(f"Worker successfully finished video generation task: {task_id}")
+                # Sequential execution of the async task with a 4-minute (240s) timeout
+                try:
+                    await asyncio.wait_for(
+                        generator.generate_video_task(
+                            task_id=task_id,
+                            script=task_args["script"],
+                            aspect_ratio=task_args["aspect_ratio"],
+                            voice=task_args["voice"],
+                            use_subtitles=task_args["use_subtitles"],
+                            use_music=task_args["use_music"],
+                            music_genre=task_args["music_genre"],
+                            visual_source=task_args["visual_source"],
+                            voice_speed=task_args["voice_speed"],
+                            resolution=task_args["resolution"],
+                            fps=task_args["fps"],
+                            use_narration=task_args["use_narration"]
+                        ),
+                        timeout=240.0
+                    )
+                    print(f"Worker successfully finished video generation task: {task_id}")
+                except (asyncio.TimeoutError, TimeoutError):
+                    print(f"Video generation task {task_id} timed out (took > 4 minutes). Skipping and picking next task from queue.")
+                    try:
+                        generator.update_progress(task_id, -1, "Error: Generation timed out (exceeded 4 minutes limit).")
+                    except Exception:
+                        pass
             except Exception as e:
                 print(f"Error executing video task {task_id} in worker: {e}")
                 try:
