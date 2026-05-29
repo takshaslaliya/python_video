@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from video_generator import VideoGenerator
 
@@ -146,8 +147,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Mount renders directory as static files to allow direct browser access
 app.mount("/renders", StaticFiles(directory=str(RENDERS_DIR)), name="renders")
+
+@app.get("/", response_class=PlainTextResponse)
+def root_page():
+    return "api is working"
+
 
 class GenerationRequest(BaseModel):
     taskId: str = Field(default_factory=lambda: str(uuid.uuid4()))
