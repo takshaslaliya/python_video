@@ -6,7 +6,7 @@ edge-tts==6.1.9
 moviepy==1.0.3
 numpy==1.26.4
 Pillow==10.2.0
-requests==2.31.0
+requests>=2.32.1
 pydub==0.25.1
 openai-whisper==20231117
 diffusers==0.26.3

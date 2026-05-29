@@ -584,14 +584,32 @@ async def subtitle_extract_api(request: SubtitleExtractRequest):
             hours = int(seconds // 3600)
             minutes = int((seconds % 3600) // 60)
             secs = int(seconds % 60)
-            millis = int((seconds - int(seconds)) * 1000)
+            millis = int(round((seconds - int(seconds)) * 1000))
+            if millis >= 1000:
+                millis -= 1000
+                secs += 1
+                if secs >= 60:
+                    secs -= 60
+                    minutes += 1
+                    if minutes >= 60:
+                        minutes -= 60
+                        hours += 1
             return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
             
         def format_vtt_timestamp(seconds):
             hours = int(seconds // 3600)
             minutes = int((seconds % 3600) // 60)
             secs = int(seconds % 60)
-            millis = int((seconds - int(seconds)) * 1000)
+            millis = int(round((seconds - int(seconds)) * 1000))
+            if millis >= 1000:
+                millis -= 1000
+                secs += 1
+                if secs >= 60:
+                    secs -= 60
+                    minutes += 1
+                    if minutes >= 60:
+                        minutes -= 60
+                        hours += 1
             return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
         # Generate SRT
@@ -668,14 +686,32 @@ async def subtitle_extract_api(request: SubtitleExtractRequest):
             hours = int(seconds // 3600)
             minutes = int((seconds % 3600) // 60)
             secs = int(seconds % 60)
-            millis = int((seconds - int(seconds)) * 1000)
+            millis = int(round((seconds - int(seconds)) * 1000))
+            if millis >= 1000:
+                millis -= 1000
+                secs += 1
+                if secs >= 60:
+                    secs -= 60
+                    minutes += 1
+                    if minutes >= 60:
+                        minutes -= 60
+                        hours += 1
             return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
             
         def format_vtt_timestamp(seconds):
             hours = int(seconds // 3600)
             minutes = int((seconds % 3600) // 60)
             secs = int(seconds % 60)
-            millis = int((seconds - int(seconds)) * 1000)
+            millis = int(round((seconds - int(seconds)) * 1000))
+            if millis >= 1000:
+                millis -= 1000
+                secs += 1
+                if secs >= 60:
+                    secs -= 60
+                    minutes += 1
+                    if minutes >= 60:
+                        minutes -= 60
+                        hours += 1
             return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
 
         for i, seg in enumerate(segments):
