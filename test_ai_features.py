@@ -109,8 +109,11 @@ class TestVoiceClonerPitchDetection(unittest.TestCase):
         pitch_val = 0
         fundamental_freq = 0
         
-        if len(snippet) >= 1024:
-            corr = np.correlate(snippet - np.mean(snippet), snippet - np.mean(snippet), mode='full')
+        sub_len = int(0.25 * fs)
+        snippet_for_corr = snippet[:sub_len]
+        
+        if len(snippet_for_corr) >= 1024:
+            corr = np.correlate(snippet_for_corr - np.mean(snippet_for_corr), snippet_for_corr - np.mean(snippet_for_corr), mode='full')
             corr = corr[len(corr)//2:]
             
             min_idx = int(fs / 400)
