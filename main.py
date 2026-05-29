@@ -505,8 +505,12 @@ async def voice_clone_api(request: VoiceCloneRequest):
                     best_snippet = candidate
             snippet = best_snippet if best_snippet is not None else samples[:segment_len]
         
-        if len(snippet) >= 1024:
-            corr = np.correlate(snippet - np.mean(snippet), snippet - np.mean(snippet), mode='full')
+        # Limit correlation window to 0.25 seconds to keep np.correlate extremely fast (avoiding O(N^2) hangs)
+        sub_len = int(0.25 * fs)
+        snippet_for_corr = snippet[:sub_len]
+        
+        if len(snippet_for_corr) >= 1024:
+            corr = np.correlate(snippet_for_corr - np.mean(snippet_for_corr), snippet_for_corr - np.mean(snippet_for_corr), mode='full')
             corr = corr[len(corr)//2:]
             
             # frequency range: 50Hz to 400Hz
@@ -520,12 +524,8 @@ async def voice_clone_api(request: VoiceCloneRequest):
                 
                 if fundamental_freq < 165:
                     gender = "male"
-                    # Male base around 120Hz
-                    pitch_val = int((fundamental_freq - 120) / 120 * 100)
                 else:
                     gender = "female"
-                    # Female base around 210Hz
-                    pitch_val = int((fundamental_freq - 210) / 210 * 100)
     except Exception as e:
         print(f"Gender/pitch detection failed: {e}")
         
@@ -535,9 +535,11 @@ async def voice_clone_api(request: VoiceCloneRequest):
         # Pick matching neural voice base
         voice_base = "en-US-GuyNeural" if gender == "male" else "en-US-AriaNeural"
         
-        # Limit pitch percentage shift to safe range [-50%, +50%]
-        pitch_val = max(-50, min(50, pitch_val))
-        pitch_str = f"{pitch_val:+}%"
+        # Calculate Hz pitch shift relative to voice defaults (GuyNeural ~120Hz, AriaNeural ~210Hz)
+        base_freq = 120 if gender == "male" else 210
+        pitch_hz_shift = int(fundamental_freq - base_freq) if fundamental_freq > 0 else 0
+        pitch_hz_shift = max(-50, min(50, pitch_hz_shift))
+        pitch_str = f"{pitch_hz_shift:+}Hz"
         rate_str = f"{'+' if request.voiceSpeed >= 1.0 else ''}{int((request.voiceSpeed - 1.0) * 100)}%"
         
         print(f"[Voice Clone] Generating with base: {voice_base}, pitch: {pitch_str}, rate: {rate_str}")
