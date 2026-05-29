@@ -331,7 +331,9 @@ class VideoGenerator:
         print(f"Generating AI video clip via Bytez for prompt: {prompt}")
         try:
             from bytez import Bytez
-            sdk = Bytez("a60b4df1afb2ad1715fdb9d8175544ef")
+            import os
+            api_key = os.getenv("BYTEZ_API_KEY", "a60b4df1afb2ad1715fdb9d8175544ef")
+            sdk = Bytez(api_key)
             model = sdk.model("ali-vilab/text-to-video-ms-1.7b")
             
             result = model.run(prompt)
@@ -596,9 +598,7 @@ class VideoGenerator:
         return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
     def build_video_ffmpeg(self, task_id, scenes_data, bg_music_path, use_subtitles, aspect_ratio="16:9", resolution="1080p", fps=30):
-        """Stitches the video clips, mixes music, and burns subtitles using MoviePy + FFmpeg."""
-        from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
-        
+        """Stitches the video clips, mixes music, and burns subtitles using pure FFmpeg (extremely low memory, zero MoviePy dependencies)."""
         task_dir = self.output_dir / task_id
         temp_video_path = task_dir / "temp_stitched.mp4"
         final_video_path = task_dir / "final_output.mp4"
@@ -609,11 +609,12 @@ class VideoGenerator:
             "720p": (1280, 720) if aspect_ratio == "16:9" else (720, 1280),
             "480p": (854, 480) if aspect_ratio == "16:9" else (480, 854)
         }
-        target_res = res_map.get(resolution, res_map["720p"]) # default to 720p for local speed
+        target_res = res_map.get(resolution, res_map["720p"]) # default to 720p for speed/resource efficiency
         width, height = target_res
         
-        # Load and stitch visual + audio clips
-        clips = []
+        temp_scene_paths = []
+        
+        # Load and stitch visual + audio clips using FFmpeg
         for i, scene in enumerate(scenes_data):
             img_path = scene.get("image_path")
             video_path = scene.get("video_path")
@@ -621,87 +622,114 @@ class VideoGenerator:
             
             # Find audio duration
             audio_dur = self.get_audio_duration(audio_path)
+            temp_scene_path = task_dir / f"temp_scene_{i}.mp4"
             
+            has_valid_video = False
             if video_path and os.path.exists(video_path):
-                from moviepy.editor import VideoFileClip
-                from moviepy.video.fx.all import loop, crop
-                
+                # Try to use FFmpeg to process this video clip. We check if the video file is valid first
                 print(f"Processing scene {i} with video clip: {video_path}")
                 try:
-                    video_clip = VideoFileClip(str(video_path))
-                    
-                    # Adjust duration of the video to match audio duration
-                    if video_clip.duration > audio_dur:
-                        # Cut to match audio duration
-                        video_scene_clip = video_clip.subclip(0, audio_dur)
+                    # Construct FFmpeg command to scale, crop, loop and stitch
+                    # -stream_loop -1 loops input 0 infinitely
+                    # We map 0:v (first input video) and 1:a (second input narration audio)
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-stream_loop", "-1", "-i", str(video_path),
+                        "-i", str(audio_path),
+                        "-map", "0:v", "-map", "1:a",
+                        "-t", f"{audio_dur:.3f}",
+                        "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}",
+                        "-r", str(fps),
+                        "-c:v", "libx264",
+                        "-pix_fmt", "yuv420p",
+                        "-c:a", "aac",
+                        "-ar", "44100",
+                        "-ac", "2",
+                        str(temp_scene_path)
+                    ]
+                    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    if res.returncode == 0:
+                        has_valid_video = True
                     else:
-                        # Loop video clip if it's shorter than audio duration
-                        video_scene_clip = loop(video_clip, duration=audio_dur)
-                        
-                    # Calculate scale factor to cover the target box without stretching
-                    scale = max(width / video_scene_clip.w, height / video_scene_clip.h)
-                    new_w = int(video_scene_clip.w * scale)
-                    new_h = int(video_scene_clip.h * scale)
-                    
-                    # Resize
-                    video_scene_clip = video_scene_clip.resize((new_w, new_h))
-                    
-                    # Center crop to target resolution
-                    x_center = new_w / 2
-                    y_center = new_h / 2
-                    video_scene_clip = crop(video_scene_clip, x_center=x_center, y_center=y_center, width=width, height=height)
-                    
-                    audio_clip = AudioFileClip(str(audio_path))
-                    video_scene_clip = video_scene_clip.set_audio(audio_clip)
+                        print(f"FFmpeg video processing failed: {res.stderr.decode('utf-8')}. Falling back to procedural background.")
                 except Exception as e:
-                    print(f"Failed to load video file clip: {e}. Falling back to procedural background.")
+                    print(f"Failed to process video: {e}. Falling back to procedural background.")
+            
+            if not has_valid_video:
+                # If we don't have video or it failed, use image (img_path or generate procedural fallback)
+                actual_img_path = img_path
+                if not actual_img_path or not os.path.exists(actual_img_path):
+                    # Generate a procedural fallback image
                     fallback_img_path = task_dir / f"scene_{i}_fallback.png"
                     self.generate_procedural_image(scene.get("text", "Scene"), fallback_img_path, aspect_ratio)
-                    img_clip = ImageClip(str(fallback_img_path)).set_duration(audio_dur)
-                    audio_clip = AudioFileClip(str(audio_path))
-                    video_scene_clip = img_clip.set_audio(audio_clip)
-            else:
-                # Create video clip from image
-                img_clip = ImageClip(str(img_path)).set_duration(audio_dur)
-                audio_clip = AudioFileClip(str(audio_path))
+                    actual_img_path = fallback_img_path
                 
-                # Attach audio
-                video_scene_clip = img_clip.set_audio(audio_clip)
-                
-                # Ken Burns Zoom-in (scale from 1.0 to 1.08 over duration)
-                try:
-                    video_scene_clip = video_scene_clip.resize(lambda t: 1.0 + 0.08 * (t / audio_dur))
-                except Exception as e:
-                    print("Could not apply Ken Burns zoom, using static clip:", e)
-                
-            clips.append(video_scene_clip)
+                print(f"Processing scene {i} with image: {actual_img_path}")
+                # Construct FFmpeg command to loop image and combine with narration audio
+                # -loop 1 loops input 0 (image)
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-loop", "1", "-i", str(actual_img_path),
+                    "-i", str(audio_path),
+                    "-map", "0:v", "-map", "1:a",
+                    "-t", f"{audio_dur:.3f}",
+                    "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}",
+                    "-r", str(fps),
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                    "-ar", "44100",
+                    "-ac", "2",
+                    str(temp_scene_path)
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                if res.returncode != 0:
+                    error_msg = res.stderr.decode('utf-8')
+                    print(f"FFmpeg image-to-video conversion failed: {error_msg}")
+                    raise Exception(f"Failed to generate clip for scene {i}: {error_msg}")
+            
+            temp_scene_paths.append(temp_scene_path)
             
         self.update_progress(task_id, 70, "Generating video timeline...")
         
-        # Concatenate scenes
-        final_clip = concatenate_videoclips(clips, method="compose")
+        # Concatenate scenes using concat demuxer
+        concat_file_path = task_dir / "concat_list.txt"
+        with open(concat_file_path, "w", encoding="utf-8") as f:
+            for p in temp_scene_paths:
+                f.write(f"file '{p.absolute()}'\n")
+                
+        concat_cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", str(concat_file_path),
+            "-c", "copy",
+            str(temp_video_path)
+        ]
         
-        # Write temporary stitched file (without background music or subtitles burned yet)
-        final_clip.write_videofile(
-            str(temp_video_path),
-            fps=fps,
-            codec="libx264",
-            audio_codec="aac",
-            temp_audiofile=str(task_dir / "temp_audio.m4a"),
-            remove_temp=True,
-            threads=4,
-            logger=None
-        )
-        
-        # Close clips to release files
-        for c in clips:
-            c.close()
-        final_clip.close()
-        
+        print("Concatenating clips:", " ".join(concat_cmd))
+        res = subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res.returncode != 0:
+            error_msg = res.stderr.decode('utf-8')
+            print(f"FFmpeg concatenation failed: {error_msg}")
+            raise Exception(f"Failed to concatenate scene video files: {error_msg}")
+            
+        # Clean up temporary scene video files and the list
+        for p in temp_scene_paths:
+            try:
+                if p.exists():
+                    p.unlink()
+            except Exception:
+                pass
+        try:
+            if concat_file_path.exists():
+                concat_file_path.unlink()
+        except Exception:
+            pass
+            
         self.update_progress(task_id, 85, "Mixing audio and subtitles...")
         
         # Step 2: Combine with background music and burn subtitles using FFmpeg command line
-        # This is extremely fast and avoids ImageMagick dependencies
         srt_path = task_dir / "subtitles.srt"
         
         ffmpeg_cmd = ["ffmpeg", "-y", "-i", str(temp_video_path)]
@@ -720,8 +748,7 @@ class VideoGenerator:
         # Subtitle burning logic (using FFmpeg subtitles filter)
         video_filter = ""
         if use_subtitles and srt_path.exists():
-            # Escape path for FFmpeg filter. SRT filter can have issues with backslashes on windows,
-            # but on Linux we just escape colons and special characters.
+            # Escape path for FFmpeg filter.
             escaped_srt = str(srt_path).replace(":", "\\:").replace("'", "\\'")
             
             # Setup custom modern subtitle styling
@@ -750,7 +777,11 @@ class VideoGenerator:
         
         # Run FFmpeg command
         print("Running FFmpeg post-processing:", " ".join(ffmpeg_cmd))
-        subprocess.run(ffmpeg_cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        res = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if res.returncode != 0:
+            error_msg = res.stderr.decode('utf-8')
+            print(f"FFmpeg post-processing failed: {error_msg}")
+            raise Exception(f"FFmpeg post-processing failed: {error_msg}")
         
         # Clean up temp stitched video
         if temp_video_path.exists():
