@@ -475,6 +475,7 @@ async def voice_clone_api(request: VoiceCloneRequest):
     # 1. Detect pitch / gender of sample voice
     gender = "female"
     pitch_val = 0
+    fundamental_freq = 0
     try:
         from pydub import AudioSegment
         import numpy as np
@@ -484,11 +485,25 @@ async def voice_clone_api(request: VoiceCloneRequest):
         samples = np.array(sound.get_array_of_samples(), dtype=float)
         fs = sound.frame_rate
         
-        # simple autocorrelation snippet
-        duration_sec = sound.duration_seconds
-        start_s = int(max(0, (duration_sec / 2) - 1.5) * fs)
-        end_s = int(min(len(samples), (duration_sec / 2) + 1.5) * fs)
-        snippet = samples[start_s:end_s]
+        # Robust segment selector: find the 3s window with highest RMS energy
+        segment_len = int(3.0 * fs)
+        num_samples = len(samples)
+        
+        if num_samples <= segment_len:
+            snippet = samples
+        else:
+            best_snippet = None
+            max_energy = -1.0
+            step = max(1, segment_len // 2)
+            # Scan overlapping windows
+            for start_idx in range(0, num_samples - segment_len, step):
+                end_idx = start_idx + segment_len
+                candidate = samples[start_idx:end_idx]
+                energy = np.sqrt(np.mean(candidate ** 2))
+                if energy > max_energy:
+                    max_energy = energy
+                    best_snippet = candidate
+            snippet = best_snippet if best_snippet is not None else samples[:segment_len]
         
         if len(snippet) >= 1024:
             corr = np.correlate(snippet - np.mean(snippet), snippet - np.mean(snippet), mode='full')
@@ -533,7 +548,7 @@ async def voice_clone_api(request: VoiceCloneRequest):
             "success": True,
             "audioUrl": f"/renders/voice-clones/{clone_id}.mp3",
             "gender": gender,
-            "detectedPitch": f"{pitch_val}%"
+            "detectedPitch": fundamental_freq
         }
     except Exception as e:
         # Fallback to gTTS if edge-tts fails
@@ -544,6 +559,8 @@ async def voice_clone_api(request: VoiceCloneRequest):
             return {
                 "success": True,
                 "audioUrl": f"/renders/voice-clones/{clone_id}.mp3",
+                "gender": "unknown",
+                "detectedPitch": 0,
                 "fallback": True
             }
         except Exception as ex:

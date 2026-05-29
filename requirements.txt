@@ -2,9 +2,9 @@ fastapi==0.110.0
 uvicorn==0.28.0
 pydantic==2.6.4
 gTTS==2.5.1
-edge-tts==6.1.9
+edge-tts>=7.2.8
 moviepy==1.0.3
-numpy==1.26.4
+numpy>=2.0.0
 Pillow==10.2.0
 requests>=2.32.1
 pydub==0.25.1
