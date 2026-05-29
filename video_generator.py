@@ -27,19 +27,9 @@ try:
 except ImportError:
     edge_tts = None
 
-# Optional AI imports
-try:
-    import torch
-    from diffusers import StableDiffusionPipeline
-    SD_AVAILABLE = True
-except ImportError:
-    SD_AVAILABLE = False
-
-try:
-    import whisper
-    WHISPER_AVAILABLE = True
-except ImportError:
-    WHISPER_AVAILABLE = False
+# Optional AI imports disabled at top-level to prevent Out Of Memory (OOM) on 512MB RAM instances
+SD_AVAILABLE = False
+WHISPER_AVAILABLE = False
 
 # Fallback fonts for PIL rendering
 SYSTEM_FONTS = [
@@ -67,6 +57,53 @@ class VideoGenerator:
         self.uploads_dir = Path(uploads_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.uploads_dir.mkdir(parents=True, exist_ok=True)
+        self.active_processes = {}
+
+    def run_subprocess(self, task_id, cmd, check=False):
+        """Runs a subprocess synchronously while registering it for cancellation."""
+        import subprocess
+        print(f"[{task_id}] Running subprocess: {' '.join(cmd)}")
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        
+        if not hasattr(self, 'active_processes'):
+            self.active_processes = {}
+        if task_id not in self.active_processes:
+            self.active_processes[task_id] = []
+        self.active_processes[task_id].append(proc)
+        
+        try:
+            stdout, stderr = proc.communicate()
+            if check and proc.returncode != 0:
+                raise subprocess.CalledProcessError(proc.returncode, cmd, output=stdout, stderr=stderr)
+            
+            class CompletedProcessMock:
+                def __init__(self, returncode, stdout, stderr):
+                    self.returncode = returncode
+                    self.stdout = stdout
+                    self.stderr = stderr
+            return CompletedProcessMock(proc.returncode, stdout, stderr)
+        finally:
+            if hasattr(self, 'active_processes') and task_id in self.active_processes:
+                if proc in self.active_processes[task_id]:
+                    self.active_processes[task_id].remove(proc)
+
+    def cleanup_task_processes(self, task_id):
+        """Kills any running subprocesses for a given task ID."""
+        if hasattr(self, 'active_processes') and task_id in self.active_processes:
+            procs = list(self.active_processes[task_id])
+            for proc in procs:
+                try:
+                    if proc.poll() is None:
+                        print(f"[{task_id}] Terminating process {proc.pid}...")
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=1.0)
+                        except Exception:
+                            print(f"[{task_id}] Force killing process {proc.pid}...")
+                            proc.kill()
+                except Exception as e:
+                    print(f"Error terminating process: {e}")
+            self.active_processes[task_id] = []
         
         # Load local Stable Diffusion if available and GPU exists
         self.sd_pipeline = None
@@ -647,7 +684,7 @@ class VideoGenerator:
                         "-ac", "2",
                         str(temp_scene_path)
                     ]
-                    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    res = self.run_subprocess(task_id, cmd)
                     if res.returncode == 0:
                         has_valid_video = True
                     else:
@@ -682,7 +719,7 @@ class VideoGenerator:
                     "-ac", "2",
                     str(temp_scene_path)
                 ]
-                res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                res = self.run_subprocess(task_id, cmd)
                 if res.returncode != 0:
                     error_msg = res.stderr.decode('utf-8')
                     print(f"FFmpeg image-to-video conversion failed: {error_msg}")
@@ -708,7 +745,7 @@ class VideoGenerator:
         ]
         
         print("Concatenating clips:", " ".join(concat_cmd))
-        res = subprocess.run(concat_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        res = self.run_subprocess(task_id, concat_cmd)
         if res.returncode != 0:
             error_msg = res.stderr.decode('utf-8')
             print(f"FFmpeg concatenation failed: {error_msg}")
@@ -777,7 +814,7 @@ class VideoGenerator:
         
         # Run FFmpeg command
         print("Running FFmpeg post-processing:", " ".join(ffmpeg_cmd))
-        res = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        res = self.run_subprocess(task_id, ffmpeg_cmd)
         if res.returncode != 0:
             error_msg = res.stderr.decode('utf-8')
             print(f"FFmpeg post-processing failed: {error_msg}")
@@ -817,7 +854,7 @@ class VideoGenerator:
                     # Generate 5 seconds of silence for each scene using ffmpeg
                     duration = 5.0
                     cmd = ["ffmpeg", "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono", "-t", str(duration), str(audio_path)]
-                    await asyncio.to_thread(subprocess.run, cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+                    await asyncio.to_thread(self.run_subprocess, task_id, cmd, check=True)
                 
                 # Generate visual
                 has_video = False
@@ -915,7 +952,8 @@ class VideoGenerator:
             self.update_progress(task_id, 100, "Generation complete!", video_url=f"/renders/{task_id}/final_output.mp4")
             
         except asyncio.CancelledError:
-            print(f"Task {task_id} was cancelled or timed out (took > 4 minutes).")
+            print(f"Task {task_id} was cancelled or timed out (took > 4 minutes). Cleaning up processes...")
+            self.cleanup_task_processes(task_id)
             self.update_progress(task_id, -1, "Error: Generation timed out (exceeded 4 minutes limit).")
             raise
         except Exception as e:

@@ -594,6 +594,38 @@ async def subtitle_extract_api(request: SubtitleExtractRequest):
     
     # 1. Try transcribing using Whisper
     try:
+        import os
+        is_low_mem = False
+        if os.getenv("IS_LOW_MEM", "").lower() == "true" or "RENDER" in os.environ:
+            is_low_mem = True
+            print("[Subtitles] Low-memory environment detected via env. Skipping Whisper to prevent OOM.")
+        else:
+            # Check cgroup limits (e.g. inside Docker containers)
+            for cgroup_path in ["/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory.max"]:
+                try:
+                    if os.path.exists(cgroup_path):
+                        with open(cgroup_path, "r") as f:
+                            limit = int(f.read().strip())
+                            if limit < 1.0 * 1024 * 1024 * 1024:
+                                is_low_mem = True
+                                print(f"[Subtitles] Container cgroup limit is low ({limit / (1024**2):.1f} MB). Skipping Whisper to prevent OOM.")
+                                break
+                except Exception:
+                    pass
+            
+            # Check system RAM if cgroup wasn't triggered
+            if not is_low_mem:
+                try:
+                    mem_bytes = os.sysconf('SC_PAGE_SIZE') * os.sysconf('SC_PHYS_PAGES')
+                    if mem_bytes < 1.2 * 1024 * 1024 * 1024:
+                        is_low_mem = True
+                        print(f"[Subtitles] Low-memory host detected ({mem_bytes / (1024**2):.1f} MB RAM). Skipping Whisper to prevent OOM.")
+                except Exception:
+                    pass
+                    
+        if is_low_mem:
+            raise MemoryError("Skipping local Whisper model loading due to memory constraints.")
+            
         import whisper
         print(f"[Subtitles] Loading Whisper tiny model...")
         model = whisper.load_model("tiny")
